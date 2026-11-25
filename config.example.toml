@@ -1,0 +1,19 @@
+# Copy to ~/.config/uniassist/config.toml (or pass --config). No secrets here.
+# Secrets (Canvas token, iCal URL) are set with: uniassist auth set
+
+timezone = "Europe/Stockholm"
+
+[canvas]
+base_url = "https://bth.instructure.com"
+
+[llm]
+host = "http://localhost:11434"
+model = "qwen2.5:7b-instruct"        # any Ollama model with tool-calling support
+temperature = 0.0
+
+[cache]
+ttl_seconds = 300
+
+[programme]
+# Student-provided JSON listing next-semester courses (see README).
+# path = "~/.config/uniassist/programme.json"

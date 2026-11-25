@@ -1,0 +1,26 @@
+[project]
+name = "uniassist"
+version = "0.1.0"
+description = "Agentic university assistant (Canvas + schedule tools, RAG plug-in point)"
+requires-python = ">=3.11"
+dependencies = ["httpx==0.28.1", "icalendar==7.3.2"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0"]
+
+[project.scripts]
+uniassist = "uniassist.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+uniassist = ["mockdata/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

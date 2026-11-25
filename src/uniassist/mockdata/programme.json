@@ -1,0 +1,7 @@
+{
+  "semester": "Spring 2027",
+  "courses": [
+    {"code": "MOCK-ML2", "name": "Machine Learning II", "credits": 7.5, "period": "P3"},
+    {"code": "MOCK-DS", "name": "Distributed Systems", "credits": 7.5, "period": "P4"}
+  ]
+}

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+config.toml
+secrets.json
+*.ics
+programme.json
+!src/uniassist/mockdata/*
+*.egg-info/
