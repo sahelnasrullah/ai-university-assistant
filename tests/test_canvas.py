@@ -16,7 +16,8 @@ def test_pagination_and_normalisation(tz):
 
 
 def test_restricted_course_skipped(tz):
-    assert [c.name for c in mock.mock_canvas(tz).courses()] == ["Generative AI", "Software Architecture"]
+    assert [c.name for c in mock.mock_canvas(tz).courses()] == [
+        "Generative AI", "Software Architecture", "MOCK Old Course VT25 Databases"]
 
 
 def test_bad_token(tz):

@@ -5,8 +5,8 @@ an unverified assumption from the README. Do these first.
 
 ## Phase 0: Verify assumptions (do first)
 
-- [ ] **(verify)** Can a BTH student create a Canvas access token? Find the BTH Canvas URL.
-- [ ] **(verify)** Does TimeEdit offer an iCal export for your schedule? Is the URL stable?
+- [x] **(verify)** Can a BTH student create a Canvas access token? Yes. URL is https://bth.instructure.com (verified 2026-11-26; canvas.bth.se is wrong).
+- [x] **(verify)** Schedule: decided to be user-supplied (.ics import or manual entry), no TimeEdit dependency.
 - [ ] **(verify)** Where do grades live? Check what Canvas shows. Check whether Ladok has any usable export.
 - [ ] **(verify)** Where do next-semester courses come from? Programme plan on bth.se or another source.
 - [x] Choose the core question set for version 1 (see Phase 6).
@@ -61,7 +61,7 @@ an unverified assumption from the README. Do these first.
 - [ ] When is my next lecture?
 - [ ] What do I need to prepare for it?
 - [ ] What is the lecture about?
-- [ ] When is my next assignment due? / When is Assignment X in course Y due?
+- [x] When is my next assignment due? / When is Assignment X in course Y due? (works on real Canvas data)
 - [ ] What grade did I get on exam X? (depends on the grades source)
 - [ ] Which courses am I reading next semester? (depends on the source)
 
@@ -82,10 +82,54 @@ an unverified assumption from the README. Do these first.
 
 ## Phase 9: Interface and polish (later)
 
-- [ ] Simple UI (web or chat) after the CLI works.
+- [x] Simple UI (web or chat) after the CLI works.
 - [x] Onboarding: link your account once (paste token and schedule URL).
 - [x] Proactive features (optional): daily summary, deadline reminders.
 - [x] README with setup instructions.
+
+## Phase 10: More Canvas tools (read-only)
+
+- [x] `get_calendar_events(start, end)`: teacher-created events (exams, guest lectures). Check BTH actually fills it.
+- [x] `get_missing_submissions`: replaces the 14-day overdue heuristic.
+- [x] `get_submission_feedback(course, assignment)`: score, teacher comments, late/missing flags.
+- [x] `get_todo_items`: Canvas's own to-do list, as a cross-check.
+- [x] `get_course_syllabus`, `get_pages`, `list_files` (files are the bridge to the RAG work).
+- [x] `get_teachers(course)`; inbox only as an opt-in.
+- [x] Verify each endpoint against the real BTH Canvas before relying on it.
+- [x] Choose how to show only current courses (old terms currently leak into results).
+
+## Phase 11: Learning mode (tutor, not solver)
+
+Goal: from an assignment, help the student learn and do the work, never hand over a submission-ready answer.
+
+- [x] Show the course/BTH AI policy before offering help (needs the syllabus via RAG).
+- [x] Actions per assignment: Understand it, Plan it (steps + time before the deadline), Hint (staged 1 to 3), Quiz me, Review my draft.
+- [x] Enforce the no-solution rule in code, not only in the prompt: no tool or action returns a full solution; hints are staged; draft review points out problems without rewriting.
+- [x] Tests that try to bypass it ("just give me the code", "ignore your rules") and check no full solution comes out.
+- [x] Decide what the assistant logs (nothing personal leaves the machine).
+
+## Phase 12: Click interface
+
+- [x] Pick the UI: small local web app (recommended) or terminal UI.
+- [x] Flow: courses, assignments, assignment details, action buttons (see Phase 11).
+- [x] Dashboard: today's schedule, deadlines this week, new announcements.
+- [x] Keep it local-only (bind to 127.0.0.1), token stays in the existing secrets file.
+
+## Still open from earlier phases
+
+- [ ] **(verify)** Grades: Canvas only shows grades teachers enter. Ladok has no known student API.
+- [ ] **(verify)** Next-semester courses: plan.bth.se is JavaScript-rendered; for now a student-provided JSON file.
+- [ ] Install Ollama, pull a tool-calling model, run `uniassist chat -v` and `eval/run_eval.py --llm` (never run end to end yet).
+- [ ] RAG layer (Phase 4), being built separately, plugs in through `src/uniassist/rag.py`.
+- [ ] Wire the retriever into `build_context()` in `cli.py`.
+- [ ] RAGAS metrics and plain-RAG vs RAG+tools baseline (need the RAG system).
+
+## Suggested next order
+
+1. Install Ollama and run the agent on real data (finds the real problems fastest).
+2. Phase 10 tools that answer everyday questions (calendar, missing submissions, feedback).
+3. Phase 11 learning mode, then Phase 12 UI on top of it.
+4. Connect the RAG system when it is ready.
 
 ## Suggested build order
 
@@ -100,3 +144,21 @@ Add 8 as you go and 9 last. A first usable milestone is: "When is my next assign
 - Not done: simple web UI (Phase 9); the RAGAS metrics and the plain-RAG vs RAG+tools baseline (need your RAG).
 - Still unverified (needs your real account): BTH Canvas token creation, real Canvas URL, Ladok/grades source,
   `uniassist --llm` end to end with a pulled Ollama model (Ollama is not installed here).
+
+## Status update (2026-11-26): built autonomously
+
+Done and tested (105 tests): Canvas tools (checked against the real BTH Canvas), current-course filter, TimeEdit
+schedule handling (.html to .ics, group-schedule filtering), planner (priorities, clashes, study plan), change
+alerts + deadline warnings + desktop notifications (+ systemd unit generator), briefing/week views, learning mode
+with code-level guards, local web app, evaluation (`--guard` added).
+
+Decisions made without asking: nothing is logged beyond the local hint-level state
+(`~/.config/uniassist/tutor_state.json`); `timers` only prints units (you install them); hint levels persist per assignment.
+
+Still open:
+- [ ] Install Ollama + a tool-calling model, then run `eval/run_eval.py --llm` and `--llm --no-tools`
+- [ ] Click through the web app in a real browser (`uniassist web --open`)
+- [ ] Enable timers (`uniassist timers`) once happy with `uniassist notify`
+- [ ] Room finder, exam registration, study regulations Q&A (the last one is RAG)
+- [ ] Connect the RAG retriever in `build_context()` (see `rag.py`)
+- [ ] Known guard gaps (see `eval/run_eval.py --guard`): obfuscated and indirect requests

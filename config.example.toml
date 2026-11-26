@@ -17,3 +17,15 @@ ttl_seconds = 300
 [programme]
 # Student-provided JSON listing next-semester courses (see README).
 # path = "~/.config/uniassist/programme.json"
+
+[courses]
+include_past = false        # Canvas keeps every course you ever took; by default only this term and later
+
+[planning]
+study_hours_per_day = 3     # used by the study planner (weekends count half)
+
+[aliases]                   # your own shortcuts for course names
+# "gen ai" = "DV2658"
+
+[schedule]
+show_all_events = false     # TimeEdit exports often cover a whole student group; false = only your current Canvas courses

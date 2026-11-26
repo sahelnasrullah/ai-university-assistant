@@ -15,6 +15,13 @@ class Cache:
         if self.dir and ttl > 0:
             self.dir.mkdir(parents=True, exist_ok=True)
 
+    _last: float | None = None
+
+    def last_fetch_at(self):
+        """When data was last fetched live (None if everything came from cache)."""
+        from datetime import datetime
+        return datetime.fromtimestamp(self._last) if self._last else None
+
     def _path(self, key: str) -> Path:
         return self.dir / (hashlib.sha256(key.encode()).hexdigest()[:32] + ".json")
 
@@ -28,6 +35,7 @@ class Cache:
             except json.JSONDecodeError:
                 pass
         value = fetch()
+        self._last = time.time()
         p.write_text(json.dumps(value))
         p.chmod(0o600)
         return value

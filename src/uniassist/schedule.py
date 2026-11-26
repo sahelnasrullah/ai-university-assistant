@@ -24,12 +24,35 @@ MANUAL_FILE = CONFIG_DIR / "schedule.json"
 ICS_FILE = CONFIG_DIR / "schedule.ics"
 
 _TYPES = [
-    ("lecture", r"lecture|föreläsning|forelasning|\bfl\b"),
+    ("lecture", r"lecture|föreläsning|forelasning|lektion|\bfl\b"),
     ("lab", r"\blab|laboration"),
     ("seminar", r"seminar"),
     ("exercise", r"exercise|övning|ovning|tutorial"),
-    ("exam", r"exam|tenta|tentamen"),
+    ("exam", r"exam|tenta|tentamen|salsskrivning"),
+    ("presentation", r"presentation"),
 ]
+
+_CODE = re.compile(r"\b[A-Z]{2}\d{4}\b")
+_TE_CODE = re.compile(r"^([A-Z]{2}\d{4})(?:-[HV]T?\d{2}-LP\d+)?$")
+_HOLIDAYS = re.compile(r"julafton|juldagen|annandag|nyårs|trettonda|påsk|midsommar|långfredag|"
+                       r"kristi|första maj|nationaldag|alla helgon", re.I)
+
+
+def event_codes(e: "Event") -> list[str]:
+    """Course codes (e.g. DV2658) mentioned by an event."""
+    return sorted(set(_CODE.findall(f"{e.course or ''} {e.title}")))
+
+
+def parse_timeedit_title(title: str) -> tuple[str | None, str | None, str | None]:
+    """TimeEdit titles look like 'DV2658-H26-LP2, ABC, Föreläsning, DVAMI22h, ...'.
+    Returns (course codes, activity word, readable title) or (None, None, None)."""
+    parts = [p.strip() for p in title.split(",") if p.strip()]
+    codes = [m.group(1) for p in parts if (m := _TE_CODE.match(p))]
+    if not codes:
+        return None, None, None
+    activity = next((p for p in parts if guess_type(p)), None)
+    return ", ".join(dict.fromkeys(codes)), activity, " / ".join(dict.fromkeys(codes)) + (
+        f" {activity}" if activity else "")
 
 
 @dataclass
@@ -64,20 +87,29 @@ def _field(desc: str, *names: str) -> str | None:
 
 
 def parse_ics(data: bytes | str, tz) -> list[Event]:
-    cal = Calendar.from_ical(data)
+    try:
+        cal = Calendar.from_ical(data)
+    except ValueError as e:
+        raise ScheduleError("That is not a valid iCal (.ics) file.") from e
     events = []
     for c in cal.walk("VEVENT"):
         start = to_aware(c.decoded("DTSTART"), tz)
         end = to_aware(c.decoded("DTEND"), tz) if c.get("DTEND") else start
         title = str(c.get("SUMMARY", "")).strip()
         desc = str(c.get("DESCRIPTION", ""))
+        te_course, te_activity, te_title = parse_timeedit_title(title)
+        etype = ((_field(desc, "type", "typ", "aktivitetstyp") or "").lower()
+                 or (guess_type(te_activity) if te_activity else None) or guess_type(f"{title} {desc}"))
+        if not te_course and _HOLIDAYS.search(title):
+            etype = "holiday"
+        note = next((ln.strip() for ln in desc.splitlines() if ln.strip() and not ln.startswith("ID ")), "")
+        loc = str(c.get("LOCATION", "")).strip() or None
+        if loc is None and re.search(r"online", title, re.I):
+            loc = "Online"
         events.append(Event(
-            start=start, end=end, title=title,
-            course=_field(desc, "course", "kurs", "kurskod"),
-            type=(_field(desc, "type", "typ", "aktivitetstyp") or "").lower()
-                 or guess_type(f"{title} {desc}"),
-            location=str(c.get("LOCATION", "")).strip() or None,
-            description=desc,
+            start=start, end=end, title=(f"{te_title} – {note}" if te_title and note else te_title or title),
+            course=_field(desc, "course", "kurs", "kurskod") or te_course,
+            type=etype, location=loc, description=desc,
         ))
     return events
 
@@ -111,6 +143,10 @@ def import_ics(src: Path, dest: Path = ICS_FILE) -> int:
     return n
 
 
+class ScheduleError(Exception):
+    """The schedule source is unreachable or not an iCal file."""
+
+
 class Schedule:
     def __init__(self, tz, ics_url: str | None = None, ics_file: Path | None = ICS_FILE,
                  manual_file: Path | None = MANUAL_FILE, cache=None,
@@ -123,14 +159,30 @@ class Schedule:
         self.transport = transport
 
     def _from_url(self) -> list[Event]:
-        def fetch() -> str:
+        def get(url: str) -> str:
             try:
-                r = httpx.Client(transport=self.transport, timeout=20).get(self.ics_url)
+                r = httpx.Client(transport=self.transport, timeout=20, follow_redirects=True).get(url)
                 r.raise_for_status()
             except httpx.HTTPError as e:
-                raise RuntimeError(f"Could not fetch the schedule URL ({e.__class__.__name__}).") from e
+                raise ScheduleError(f"Could not fetch the schedule URL ({e.__class__.__name__}).") from e
             return r.text
+
+        def fetch() -> str:
+            text = get(self.ics_url)
+            if not text.lstrip().startswith("BEGIN:VCALENDAR"):
+                # TimeEdit view links end in .html; the same link ending in .ics is the calendar file
+                if self.ics_url.split("?")[0].endswith(".html"):
+                    alt = self.ics_url.replace(".html", ".ics", 1)
+                    text = get(alt)
+                if not text.lstrip().startswith("BEGIN:VCALENDAR"):
+                    raise ScheduleError(
+                        "The schedule link is a web page, not an iCal file. In TimeEdit use "
+                        "'Subscribe' and copy the .ics link, or export the file and run "
+                        "`uniassist schedule import FILE.ics`.")
+            return text
         text = self.cache.get_or_fetch(f"ics|{self.ics_url}", fetch) if self.cache else fetch()
+        if not str(text).lstrip().startswith("BEGIN:VCALENDAR"):
+            text = fetch()          # a bad entry cached by an older run: ignore it and refetch
         return parse_ics(text, self.tz)
 
     def configured(self) -> bool:

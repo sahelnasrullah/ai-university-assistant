@@ -35,6 +35,26 @@ class Course:
     current_grade: str | None = None
     current_score: float | None = None
     final_grade: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+    @property
+    def term_key(self) -> tuple[int, int] | None:
+        """(year, 0=spring/1=autumn) parsed from names like 'DV2658 HT26 lp2 ...' or 'V25'."""
+        m = _TERM.search(self.name) or _TERM.search(self.code)
+        if not m:
+            return None
+        return 2000 + int(m.group(2)), 1 if m.group(1).upper().startswith("H") else 0
+
+    def is_current(self, now: datetime) -> bool:
+        """Canvas keeps every course ever taken. Current = this term or later.
+        Courses with no term in the name (e.g. programme info) are kept."""
+        if self.end_at and self.end_at < now:
+            return False
+        key = self.term_key
+        if key is None:
+            return True
+        return key >= (now.year, 1 if now.month >= 7 else 0)
 
 
 @dataclass
@@ -70,6 +90,47 @@ class Module:
     items: list[str]
 
 
+@dataclass
+class CalendarEvent:
+    id: int
+    course_id: int | None
+    title: str
+    start: datetime | None
+    end: datetime | None
+    location: str | None
+    description: str  # untrusted
+
+
+@dataclass
+class Feedback:
+    course_id: int
+    assignment_id: int
+    score: float | None
+    grade: str | None
+    late: bool
+    missing: bool
+    excused: bool
+    graded_at: datetime | None
+    comments: list[dict]  # [{author, text(untrusted), at}]
+
+
+@dataclass
+class Page:
+    title: str
+    slug: str
+    updated_at: datetime | None
+    body: str = ""  # untrusted
+
+
+@dataclass
+class FileInfo:
+    name: str
+    size: int | None
+    updated_at: datetime | None
+    url: str | None
+
+
+_TERM = re.compile(r"\b(HT|VT|H|V)(\d{2})\b", re.I)
 _NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
@@ -127,6 +188,14 @@ class CanvasClient:
         key = f"{self.base_url}|{path}|{sorted(params)}"
         return self.cache.get_or_fetch(key, fetch)
 
+    def _get_one(self, path: str, params: list[tuple[str, str]] | None = None) -> dict:
+        key = f"{self.base_url}|{path}|{sorted(params or [])}"
+        return self.cache.get_or_fetch(key, lambda: self._get_page(path, params).json())
+
+    @property
+    def fetched_at(self) -> datetime | None:
+        return self.cache.last_fetch_at() if hasattr(self.cache, "last_fetch_at") else None
+
     # ---- high level ------------------------------------------------------
     def courses(self) -> list[Course]:
         raw = self._get_all("/api/v1/courses", [
@@ -143,6 +212,8 @@ class CanvasClient:
                 current_grade=enr.get("computed_current_grade"),
                 current_score=enr.get("computed_current_score"),
                 final_grade=enr.get("computed_final_grade"),
+                start_at=parse_dt((c.get("term") or {}).get("start_at") or c.get("start_at"), self.tz),
+                end_at=parse_dt(c.get("end_at") or (c.get("term") or {}).get("end_at"), self.tz),
             ))
         return out
 
@@ -179,3 +250,73 @@ class CanvasClient:
         raw = self._get_all(f"/api/v1/courses/{course_id}/modules", [("include[]", "items")])
         return [Module(id=m["id"], course_id=course_id, name=m["name"],
                        items=[i.get("title", "") for i in m.get("items", [])]) for m in raw]
+
+    # ---- extra read-only endpoints ---------------------------------------
+    def calendar_events(self, course_ids: list[int], start: datetime, end: datetime) -> list[CalendarEvent]:
+        out: list[CalendarEvent] = []
+        for i in range(0, len(course_ids), 10):  # Canvas allows max 10 context codes
+            codes = [("context_codes[]", f"course_{c}") for c in course_ids[i:i + 10]]
+            raw = self._get_all("/api/v1/calendar_events", codes + [
+                ("type", "event"), ("start_date", start.date().isoformat()),
+                ("end_date", end.date().isoformat())])
+            for e in raw:
+                cc = str(e.get("context_code", ""))
+                out.append(CalendarEvent(
+                    id=e["id"], course_id=int(cc.removeprefix("course_")) if cc.startswith("course_") else None,
+                    title=e.get("title", ""), start=parse_dt(e.get("start_at"), self.tz),
+                    end=parse_dt(e.get("end_at"), self.tz), location=e.get("location_name") or None,
+                    description=e.get("description") or ""))
+        return sorted(out, key=lambda x: x.start or datetime.max.replace(tzinfo=self.tz))
+
+    def missing_submissions(self) -> list[Assignment]:
+        raw = self._get_all("/api/v1/users/self/missing_submissions")
+        return [Assignment(
+            id=a["id"], course_id=a.get("course_id", 0), name=a["name"],
+            due_at=parse_dt(a.get("due_at"), self.tz), points_possible=a.get("points_possible"),
+            submitted=False, grade=None, score=None, url=a.get("html_url"),
+            description=a.get("description") or "",
+            submission_types=a.get("submission_types") or []) for a in raw]
+
+    def todo(self) -> list[dict]:
+        out = []
+        for t in self._get_all("/api/v1/users/self/todo"):
+            a = t.get("assignment") or {}
+            out.append({"type": t.get("type"), "course_id": t.get("course_id"),
+                        "name": a.get("name") or t.get("title"),
+                        "due_at": parse_dt(a.get("due_at"), self.tz), "url": t.get("html_url")})
+        return out
+
+    def feedback(self, course_id: int, assignment_id: int) -> Feedback:
+        s = self._get_one(f"/api/v1/courses/{course_id}/assignments/{assignment_id}/submissions/self",
+                          [("include[]", "submission_comments")])
+        return Feedback(
+            course_id=course_id, assignment_id=assignment_id, score=s.get("score"),
+            grade=s.get("grade") if s.get("workflow_state") == "graded" else None,
+            late=bool(s.get("late")), missing=bool(s.get("missing")), excused=bool(s.get("excused")),
+            graded_at=parse_dt(s.get("graded_at"), self.tz),
+            comments=[{"author": c.get("author_name", ""), "text": c.get("comment", ""),
+                       "at": c.get("created_at")} for c in s.get("submission_comments", [])])
+
+    def syllabus(self, course_id: int) -> str:
+        c = self._get_one(f"/api/v1/courses/{course_id}", [("include[]", "syllabus_body")])
+        return c.get("syllabus_body") or ""
+
+    def pages(self, course_id: int) -> list[Page]:
+        raw = self._get_all(f"/api/v1/courses/{course_id}/pages")
+        return [Page(title=p.get("title", ""), slug=p.get("url", ""),
+                     updated_at=parse_dt(p.get("updated_at"), self.tz)) for p in raw]
+
+    def page(self, course_id: int, slug: str) -> Page:
+        p = self._get_one(f"/api/v1/courses/{course_id}/pages/{slug}")
+        return Page(title=p.get("title", ""), slug=slug,
+                    updated_at=parse_dt(p.get("updated_at"), self.tz), body=p.get("body") or "")
+
+    def files(self, course_id: int) -> list[FileInfo]:
+        raw = self._get_all(f"/api/v1/courses/{course_id}/files", [("sort", "updated_at"), ("order", "desc")])
+        return [FileInfo(name=f.get("display_name", ""), size=f.get("size"),
+                         updated_at=parse_dt(f.get("updated_at"), self.tz), url=f.get("url"))
+                for f in raw]
+
+    def teachers(self, course_id: int) -> list[str]:
+        raw = self._get_all(f"/api/v1/courses/{course_id}/users", [("enrollment_type[]", "teacher")])
+        return [u.get("name", "") for u in raw]

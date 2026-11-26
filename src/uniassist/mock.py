@@ -57,6 +57,34 @@ def _canvas_transport() -> httpx.MockTransport:
         m = re.fullmatch(r"/api/v1/courses/(\d+)/(assignments|modules)", path)
         if m:
             return paged(request, data[m.group(2)].get(m.group(1), []))
+        if path == "/api/v1/calendar_events":
+            return paged(request, data["calendar_events"])
+        if path == "/api/v1/users/self/missing_submissions":
+            return paged(request, data["missing"])
+        if path == "/api/v1/users/self/todo":
+            return paged(request, data["todo"])
+        m = re.fullmatch(r"/api/v1/courses/(\d+)", path)
+        if m:
+            return httpx.Response(200, json={"id": int(m.group(1)),
+                                             "syllabus_body": data["syllabus"].get(m.group(1), "")})
+        m = re.fullmatch(r"/api/v1/courses/(\d+)/pages", path)
+        if m:
+            return paged(request, data["pages"].get(m.group(1), []))
+        m = re.fullmatch(r"/api/v1/courses/(\d+)/pages/([\w-]+)", path)
+        if m:
+            body = data["page_bodies"].get(f"{m.group(1)}/{m.group(2)}")
+            return httpx.Response(200, json=body) if body else httpx.Response(404)
+        m = re.fullmatch(r"/api/v1/courses/(\d+)/files", path)
+        if m:
+            if m.group(1) in data["files_forbidden"]:
+                return httpx.Response(403, json={"errors": [{"message": "unauthorized"}]})
+            return paged(request, data["files"].get(m.group(1), []))
+        m = re.fullmatch(r"/api/v1/courses/(\d+)/users", path)
+        if m:
+            return paged(request, data["teachers"].get(m.group(1), []))
+        m = re.fullmatch(r"/api/v1/courses/(\d+)/assignments/(\d+)/submissions/self", path)
+        if m:
+            return httpx.Response(200, json=data["feedback"].get(m.group(2), {"workflow_state": "unsubmitted"}))
         return httpx.Response(404, json={"errors": [{"message": "not found"}]})
 
     return httpx.MockTransport(handler)

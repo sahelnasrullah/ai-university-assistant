@@ -28,6 +28,10 @@ class Config:
     cache_ttl: int = 300
     cache_dir: Path = field(default_factory=lambda: CONFIG_DIR / "cache")
     programme_path: Path | None = None
+    include_past_courses: bool = False
+    schedule_all_events: bool = False
+    study_hours_per_day: float = 3.0
+    aliases: dict[str, str] = field(default_factory=dict)   # {"gen ai": "DV2658"}
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -44,6 +48,10 @@ def load_config(path: Path | None = None) -> Config:
     cfg.llm_model = llm.get("model", cfg.llm_model)
     cfg.llm_temperature = float(llm.get("temperature", cfg.llm_temperature))
     cfg.cache_ttl = int(raw.get("cache", {}).get("ttl_seconds", cfg.cache_ttl))
+    cfg.include_past_courses = bool(raw.get("courses", {}).get("include_past", False))
+    cfg.schedule_all_events = bool(raw.get("schedule", {}).get("show_all_events", False))
+    cfg.study_hours_per_day = float(raw.get("planning", {}).get("study_hours_per_day", 3.0))
+    cfg.aliases = {k.lower(): v for k, v in raw.get("aliases", {}).items()}
     prog = raw.get("programme", {}).get("path")
     if prog:
         cfg.programme_path = Path(prog).expanduser()

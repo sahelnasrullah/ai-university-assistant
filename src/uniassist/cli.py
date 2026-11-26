@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import getpass
 import json
 import sys
@@ -16,7 +17,7 @@ from .config import Config, get_secret, load_config
 from .llm import LLMError, OllamaClient
 from .programme import Programme
 from .schedule import Event, Schedule, add_manual, guess_type, import_ics
-from .summary import daily_summary
+from .summary import briefing, daily_summary, week_overview
 from .timeutil import fmt, get_tz
 from .tools import Context, build_tools, call_tool
 
@@ -26,13 +27,16 @@ def build_context(cfg: Config, mock: bool, retriever=None) -> Context:
     if mock:
         from . import mock as m
         return Context(m.mock_canvas(tz), m.mock_schedule(tz), m.mock_programme(),
-                       lambda: m.mock_now(tz), retriever)
+                       lambda: m.mock_now(tz), retriever, aliases=cfg.aliases,
+                       schedule_all=cfg.schedule_all_events)
     cache = Cache(cfg.cache_dir, cfg.cache_ttl)
     token = get_secret("canvas_token")
     canvas = CanvasClient(cfg.canvas_base_url, token, tz, cache) if token else None
     schedule = Schedule(tz, ics_url=get_secret("ical_url"), cache=cache)
     return Context(canvas, schedule, Programme(cfg.programme_path),
-                   lambda: datetime.now(tz), retriever)
+                   lambda: datetime.now(tz), retriever,
+                   include_past=cfg.include_past_courses, aliases=cfg.aliases,
+                   schedule_all=cfg.schedule_all_events)
 
 
 def _agent(args, cfg: Config) -> Agent:
@@ -84,6 +88,94 @@ def cmd_ask(args, cfg) -> int:
 
 def cmd_summary(args, cfg) -> int:
     print(daily_summary(build_context(cfg, args.mock)))
+    return 0
+
+
+def cmd_briefing(args, cfg) -> int:
+    from . import notify
+    text = briefing(build_context(cfg, args.mock))
+    print(text)
+    if args.notify and not notify.send("Morning briefing", text):
+        print("(notify-send not available; printed only)", file=sys.stderr)
+    return 0
+
+
+def cmd_week(args, cfg) -> int:
+    print(week_overview(build_context(cfg, args.mock), cfg.study_hours_per_day))
+    return 0
+
+
+def cmd_plan(args, cfg) -> int:
+    from .planner import make_plan
+    plan = make_plan(build_context(cfg, args.mock), args.days, cfg.study_hours_per_day)
+    for d in plan["days"]:
+        print(d["date"], f"{d['total_hours']:g} h:",
+              ", ".join(f"{x['assignment']} {x['hours']:g}h" for x in d["sessions"]))
+    for m in plan["not_enough_time"]:
+        print(f"NOT ENOUGH TIME: {m['assignment']} is {m['missing_hours']:g} h short before {m['due']}")
+    print(plan["note"])
+    return 0
+
+
+def cmd_priorities(args, cfg) -> int:
+    from .planner import prioritise
+    for i, t in enumerate(prioritise(build_context(cfg, args.mock)), 1):
+        print(f"{i}. {t['assignment']} ({t['course'].split()[0]}): {t['why']}")
+    return 0
+
+
+def cmd_clashes(args, cfg) -> int:
+    from .planner import find_clashes
+    found = find_clashes(build_context(cfg, args.mock))
+    print("\n".join(c["message"] for c in found) or "No clashes in the next 14 days.")
+    return 0
+
+
+def cmd_notify(args, cfg) -> int:
+    """Check for changes and deadlines; send each new alert once. Meant for a timer."""
+    import tempfile
+    from . import alerts, notify
+    ctx = build_context(cfg, args.mock)
+    if not ctx.canvas:
+        print("Canvas is not linked (run: uniassist auth set).", file=sys.stderr)
+        return 1
+    state = Path(tempfile.mkdtemp()) if args.mock else cfgmod.CONFIG_DIR
+    try:
+        changes, first = alerts.check_changes(ctx, state / "snapshot.json")
+    except CanvasError as e:
+        print(f"Canvas check failed: {e}", file=sys.stderr)
+        return 1
+    if first:
+        print("Baseline saved. Future runs report changes.")
+    fresh = alerts.only_new(changes + alerts.deadline_warnings(ctx), state / "notified.json")
+    for a in fresh:
+        print(f"{a.title}: {a.text}")
+        notify.send(a.title, a.text)
+    if not fresh and not first:
+        print("Nothing new.")
+    return 0
+
+
+def cmd_web(args, cfg) -> int:
+    from .web import App, serve
+    ctx = build_context(cfg, args.mock)
+    llm = OllamaClient(cfg.llm_host, args.model or cfg.llm_model, cfg.llm_temperature)
+    serve(App(ctx, llm, args.port, cfg.study_hours_per_day, cfg.cache_ttl // 60, cfg.timezone),
+          open_browser=args.open)
+    return 0
+
+
+def cmd_timers(args, cfg) -> int:
+    """Print systemd user units. Nothing is installed until you do it yourself."""
+    from .notify import TIMER_UNITS
+    local = Path(sys.executable).parent / "uniassist"
+    found = str(local) if local.exists() else shutil.which("uniassist")
+    exe = f'"{found}"' if found else f'"{sys.executable}" -m uniassist.cli'  # quoted: paths may hold spaces
+    for name, body in TIMER_UNITS.items():
+        print(f"# ~/.config/systemd/user/{name}\n{body.format(exe=exe)}")
+    print("# Install:  save the files above, then\n"
+          "#   systemctl --user daemon-reload\n"
+          "#   systemctl --user enable --now uniassist-check.timer uniassist-briefing.timer")
     return 0
 
 
@@ -152,6 +244,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("chat")
     a = sub.add_parser("ask"); a.add_argument("question", nargs="+")
     sub.add_parser("summary")
+    b = sub.add_parser("briefing"); b.add_argument("--notify", action="store_true")
+    sub.add_parser("week")
+    pl = sub.add_parser("plan"); pl.add_argument("--days", type=int, default=14)
+    sub.add_parser("priorities")
+    sub.add_parser("clashes")
+    sub.add_parser("notify")
+    sub.add_parser("timers")
+    w = sub.add_parser("web", help="local web interface"); w.add_argument("--port", type=int, default=8765)
+    w.add_argument("--open", action="store_true")
     t = sub.add_parser("tool"); t.add_argument("name", nargs="?"); t.add_argument("--args", default="{}")
     au = sub.add_parser("auth"); au.add_argument("action", choices=["set", "clear", "status"])
     s = sub.add_parser("schedule")
@@ -167,7 +268,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("cache-clear")
     args = p.parse_args(argv)
     cfg = load_config(args.config)
-    handlers = {None: cmd_chat, "chat": cmd_chat, "ask": cmd_ask, "summary": cmd_summary,
+    handlers = {None: cmd_chat, "chat": cmd_chat, "ask": cmd_ask, "summary": cmd_summary, "briefing": cmd_briefing, "week": cmd_week,
+                "plan": cmd_plan, "priorities": cmd_priorities, "clashes": cmd_clashes,
+                "notify": cmd_notify, "timers": cmd_timers, "web": cmd_web,
                 "tool": cmd_tool, "auth": cmd_auth, "schedule": cmd_schedule,
                 "cache-clear": cmd_cache}
     return handlers[args.cmd](args, cfg)

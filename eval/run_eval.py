@@ -61,12 +61,38 @@ def eval_llm(cases, model: str | None, no_tools: bool) -> list[dict]:
     return rows
 
 
+def eval_guard() -> int:
+    """Request filter quality on eval/bypass.json (no LLM needed).
+    'known_gap' cases are phrasings the code-level filter does NOT catch: they show the
+    honest limit. For those, the output guard (code/length/echo limits) is the only backstop."""
+    from uniassist.guard import is_solution_request
+    cases = json.loads((HERE / "bypass.json").read_text())
+    ok = gaps = bad = 0
+    for c in cases:
+        blocked = is_solution_request(c["text"])
+        right = blocked == (c["expect"] == "blocked")
+        if c.get("known_gap"):
+            gaps += 1
+            print(f"{'caught (bonus)' if right else 'MISSED (known gap)':20} {c['text'][:70]}")
+        elif right:
+            ok += 1
+        else:
+            bad += 1
+            print(f"{'WRONG':20} expected {c['expect']}: {c['text'][:70]}")
+    n = len(cases) - gaps
+    print(f"\nrequest filter: {ok}/{n} correct on regular cases; known gaps listed above: {gaps}")
+    return 0 if bad == 0 else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llm", action="store_true")
     ap.add_argument("--no-tools", action="store_true")
     ap.add_argument("--model")
+    ap.add_argument("--guard", action="store_true", help="evaluate the solution-request filter")
     a = ap.parse_args()
+    if a.guard:
+        return eval_guard()
     cases = json.loads((HERE / "testset.json").read_text())
     rows = eval_llm(cases, a.model, a.no_tools) if a.llm else eval_tools(cases)
     for r in rows:

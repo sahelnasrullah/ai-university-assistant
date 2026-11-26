@@ -128,26 +128,79 @@ student having to open Canvas, the schedule or the course pages.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest                       # 36 tests, no network, no real data
-.venv/bin/uniassist --mock summary     # try it on bundled mock data
-.venv/bin/uniassist --mock ask "When is my next lecture?"   # needs Ollama running
+.venv/bin/pytest                                  # 105 tests, no network, no real data
+.venv/bin/uniassist --mock briefing               # try everything on bundled mock data first
 ```
 
-Real data:
+Link your real accounts (only needed once):
 
 ```bash
-uniassist auth set                     # Canvas token + optional iCal URL (hidden input, stored 0600)
-uniassist schedule import my.ics       # or: schedule add --title "Lecture 3" --start "2026-12-01 10:15" --course "Generative AI" --type lecture
-uniassist tool get_upcoming_assignments   # check Canvas works without the LLM
-uniassist chat -v                      # -v shows which tools were called
-uniassist auth clear                   # delete local secrets (then revoke the token in Canvas)
+mkdir -p ~/.config/uniassist && cp config.example.toml ~/.config/uniassist/config.toml
+uniassist auth set                  # Canvas token (hidden input, stored 0600) + optional schedule link
+uniassist schedule import my.ics    # or: schedule add --title "..." --start "2026-12-01 10:15" --type lecture
+uniassist tool get_upcoming_assignments   # checks Canvas works, no language model needed
 ```
 
-Config: copy `config.example.toml` to `~/.config/uniassist/config.toml` (Canvas URL, model, programme file).
-Next-semester courses come from a JSON file you provide (`{"semester": ..., "courses": [{"code","name","credits","period"}]}`).
+Canvas is `https://bth.instructure.com` (verified). The schedule link may be a TimeEdit link: if it ends in
+`.html`, the `.ics` version is used automatically. TimeEdit exports often cover a whole student group, so only
+events for your current Canvas courses are shown (`[schedule] show_all_events = true` turns that off).
 
-Layout: `canvas.py` (read-only client) · `schedule.py` · `tools.py` (schemas + results) · `agent.py` (loop + memory)
-· `llm.py` (Ollama, swappable) · `rag.py` (plug-in point for the separate RAG system) · `eval/run_eval.py`.
+### Commands
 
-Evaluation: `python eval/run_eval.py` checks the data layer; add `--llm` for the full agent
-(tool selection, exact match, guard against invented/injected answers) and `--llm --no-tools` for a no-tools baseline.
+| Command | What it does | Needs LLM |
+|---|---|---|
+| `briefing [--notify]` | today, deadlines, what to start first, clashes | no |
+| `week` | 7 days: classes, deadlines, planned study hours | no |
+| `plan [--days N]`, `priorities`, `clashes` | study plan, ranking with reasons, clash detection | no |
+| `notify` | new assignments, changed deadlines, new announcements/grades, deadline warnings (each sent once) | no |
+| `timers` | prints systemd user units for `notify` (every 30 min) and `briefing` (07:30). Nothing is installed for you | no |
+| `web [--open]` | local web app: dashboard, assignments with learning actions, ask box | for actions and ask |
+| `chat`, `ask "..."` | natural-language questions, tools chosen by the model | yes |
+| `tool NAME --args '{...}'` | call one tool directly (good for checking your setup) | no |
+| `auth set/clear/status`, `schedule import/add/list`, `cache-clear` | setup and cleanup | no |
+
+LLM features need [Ollama](https://ollama.com) running with a tool-calling model (`ollama pull qwen2.5:7b-instruct`).
+
+### Tools the model can call (all read-only)
+
+courses, upcoming assignments, assignment due date and details (instructions, rubric), next lecture, schedule,
+grades, submission feedback, missing submissions, Canvas to-do, Canvas calendar events, syllabus, pages, files,
+teachers, announcements, next-semester courses, and the AI-policy finder. Old courses are hidden by default
+(Canvas keeps every course you ever took); asking for one by name still works.
+
+### Learning mode (tutor, not solver)
+
+Actions per assignment: understand, plan, hint (3 stages), quiz, review my draft. Rules are in code
+(`guard.py`, `tutor.py`), not just in the prompt:
+- the course's AI statements are shown first; if they restrict AI, help actions need explicit confirmation
+- requests like "just give me the code" never reach the model
+- long code blocks, over-long replies and rewrites of the student's draft are removed from the output
+- hints escalate one level at a time and there is no action that outputs a finished answer
+
+Honest limits: the filter catches common phrasings, not every one (`python eval/run_eval.py --guard` lists known
+misses), and a determined student can use another tool. The goal is to make the helpful path the easy one.
+The AI-policy finder is a keyword search and can miss or misread a statement. It never says AI is allowed
+when it found nothing.
+
+### Safety
+
+Read-only Canvas client (no write methods). Everything runs locally; the web app only accepts local connections,
+checks the Host header, needs a per-run token for POST requests, and renders all data as text under a strict CSP.
+Text from Canvas (announcements, instructions) is marked untrusted and never treated as instructions.
+`uniassist auth clear` deletes stored secrets; also revoke the token in Canvas.
+
+### Layout
+
+`canvas.py` client, `schedule.py`, `tools.py`, `agent.py`, `tutor.py` + `guard.py`, `planner.py`,
+`alerts.py` + `notify.py`, `summary.py`, `web.py`, `llm.py` (Ollama, swappable), `rag.py` (plug-in point for the
+separate RAG system), `eval/` (`run_eval.py`, plus `--llm`, `--llm --no-tools`, `--guard`).
+
+### Not verified / not done
+
+- The language-model parts have never run against a real Ollama model (none installed on the dev machine); they
+  are tested with a scripted stand-in. Tool selection quality of your chosen model is unknown until you run
+  `python eval/run_eval.py --llm`.
+- The web page's JavaScript was syntax-checked and its server logic is tested, but it has not been clicked through
+  in a real browser.
+- BTH disables Canvas Files for students and often leaves the calendar empty, so lecture times come from your schedule.
+- Not built: room finder, exam registration (Ladok/portal), study-regulation Q&A (that is RAG territory).

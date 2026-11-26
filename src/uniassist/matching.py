@@ -13,6 +13,16 @@ def tokens(s: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9åäö]+", s.lower()) if t not in _STOP]
 
 
+def _is_initials(q: str, name_tokens: list[str]) -> bool:
+    if len(q) < 2 or q.isdigit():
+        return False
+    for i in range(len(name_tokens) - len(q) + 1):
+        if all(name_tokens[i + j].startswith(q[j]) and not name_tokens[i + j].isdigit()
+               for j in range(len(q))):
+            return True
+    return False
+
+
 def score(query: str, name: str) -> float:
     """0..1. Numbers must match exactly ('assignment 2' never matches 'Assignment 12')."""
     q, n = tokens(query), tokens(name)
@@ -23,9 +33,10 @@ def score(query: str, name: str) -> float:
         return 0.0
     if " ".join(q) == " ".join(n):
         return 1.0
-    # every query token is a prefix of some name token ('gen ai' -> 'generative ai')
-    if all(any(nt.startswith(qt) for nt in n) for qt in q):
-        return 0.85 + 0.1 * (len(q) / len(n))
+    # every query token is a prefix of some name token ('gen ai' -> 'generative ai'),
+    # or the initials of consecutive name tokens ('ai' -> 'artificial intelligence')
+    if all(any(nt.startswith(qt) for nt in n) or _is_initials(qt, n) for qt in q):
+        return 0.85 + 0.1 * min(1.0, len(q) / len(n))
     return SequenceMatcher(None, " ".join(q), " ".join(n)).ratio() * 0.8
 
 
